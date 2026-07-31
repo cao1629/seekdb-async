@@ -16,6 +16,9 @@
 
 use std::path::{Path, PathBuf};
 
+const RUNTIME_RELEASE_URL: &str =
+    "https://github.com/cao1629/seekdb-async/releases/download/runtime-0.1.0";
+
 fn lib_file_name() -> &'static str {
     if cfg!(target_os = "macos") {
         "libseekdb.dylib"
@@ -59,6 +62,9 @@ fn main() {
     if found.is_none() && has_lib(&in_repo_default) {
         found = in_repo_default.canonicalize().ok();
     }
+    if found.is_none() {
+        found = download_runtime();
+    }
 
     match found {
         Some(dir) => {
@@ -76,4 +82,28 @@ fn main() {
         }
     }
     println!("cargo:rustc-link-lib=dylib=seekdb");
+}
+
+fn download_runtime() -> Option<PathBuf> {
+    let target = std::env::var("TARGET").ok()?;
+    let out = PathBuf::from(std::env::var_os("OUT_DIR")?).join("seekdb-runtime");
+    if has_lib(&out) && out.join("seekdb").exists() {
+        return Some(out);
+    }
+    let url = format!("{RUNTIME_RELEASE_URL}/seekdb-runtime-{target}.tar.gz");
+    println!("cargo:warning=downloading seekdb runtime ({target}) from {url}");
+    match fetch_unroll::Fetch::from(&url).unroll().to(&out) {
+        Ok(()) => {
+            if has_lib(&out) && out.join("seekdb").exists() {
+                Some(out)
+            } else {
+                println!("cargo:warning=downloaded runtime archive is missing expected files");
+                None
+            }
+        }
+        Err(e) => {
+            println!("cargo:warning=seekdb runtime download failed: {e}");
+            None
+        }
+    }
 }

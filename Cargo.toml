@@ -13,3 +13,7 @@ tokio = { version = "1", features = ["rt", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+[build-dependencies]
+fetch_unroll = "0.3.0"
+ureq = { version = "2.12", default-features = false, features = ["proxy-from-env", "tls"] }

@@ -19,7 +19,7 @@ conn.disconnect().await?;
 ## Requirements
 
 - POSIX (Linux / macOS). The embedded server is reachable only over a unix socket.
-- A built `libseekdb` shared library with the `seekdb` server binary **next to it**. Get both by building [seekdb-bindings](https://github.com/cao1629/seekdb-bindings):
+- A `libseekdb` shared library with the `seekdb` server binary **next to it**. The build script obtains them automatically (see below), or you can build both from [seekdb-bindings](https://github.com/cao1629/seekdb-bindings):
 
   ```sh
   git clone https://github.com/cao1629/seekdb-bindings.git
@@ -32,7 +32,13 @@ conn.disconnect().await?;
 
 ## Building
 
-The build script locates `libseekdb` via the `SEEKDB_LIB_DIR` environment variable (falling back to a sibling `../seekdb-bindings/build` checkout):
+The build script locates the runtime in this order:
+
+1. `SEEKDB_LIB_DIR` environment variable — a directory containing `libseekdb.{dylib,so}` and `seekdb`;
+2. a sibling `../seekdb-bindings/build` checkout;
+3. **download**: a prebuilt runtime archive is fetched from this repo's [releases](https://github.com/cao1629/seekdb-async/releases) and unpacked into `OUT_DIR` (currently `aarch64-apple-darwin` only). The download honors `HTTPS_PROXY`/`HTTP_PROXY` environment variables.
+
+So on a supported platform a plain `cargo build` / `cargo test` works with no setup. To use your own artifacts instead:
 
 ```sh
 SEEKDB_LIB_DIR=/path/to/dir-with-libseekdb cargo build
