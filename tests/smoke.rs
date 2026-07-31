@@ -161,8 +161,8 @@ async fn two_conn_opens_share_data() {
 async fn conn_open_shares_one_handle_per_dir() {
     let dir = test_db_dir("smoke9");
 
-    let mut a = seekdb_async::Conn::open(&dir, Some("test")).await.unwrap();
-    let mut b = seekdb_async::Conn::open(&dir, Some("test")).await.unwrap();
+    let mut a = Conn::open(&dir, Some("test")).await.unwrap();
+    let mut b = Conn::open(&dir, Some("test")).await.unwrap();
 
     a.query_drop("DROP TABLE IF EXISTS shared_t").await.unwrap();
     a.query_drop("CREATE TABLE shared_t (v INT)").await.unwrap();
@@ -178,13 +178,13 @@ async fn conn_open_shares_one_handle_per_dir() {
 
     b.disconnect().await.unwrap();
 
-    let mut reopened = seekdb_async::Conn::open(&dir, Some("test")).await;
+    let mut reopened = Conn::open(&dir, Some("test")).await;
     for _ in 0..50 {
         if reopened.is_ok() {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-        reopened = seekdb_async::Conn::open(&dir, Some("test")).await;
+        reopened = Conn::open(&dir, Some("test")).await;
     }
     let mut c = reopened.unwrap();
     let back: Option<i64> = c.query_first("SELECT v FROM shared_t").await.unwrap();
