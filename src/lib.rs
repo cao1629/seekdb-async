@@ -374,17 +374,13 @@ async fn open_inner(abs: PathBuf, params: Vec<(String, String)>) -> Result<Arc<I
 async fn shared_inner(db_dir: &Path) -> Result<Arc<Inner>> {
     let abs = absolutize(db_dir)?;
     {
-        let map = SHARED
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let map = SHARED.lock().unwrap();
         if let Some(existing) = map.get(&abs).and_then(Weak::upgrade) {
             return Ok(existing);
         }
     }
     let fresh = open_inner(abs.clone(), Vec::new()).await?;
-    let mut map = SHARED
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut map = SHARED.lock().unwrap();
     if let Some(existing) = map.get(&abs).and_then(Weak::upgrade) {
         return Ok(existing);
     }

@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-use seekdb_async::mysql_async::Pool;
+use seekdb_async::mysql_async::{OptsBuilder, Pool};
 use seekdb_async::prelude::*;
+use seekdb_async::Conn;
 use std::path::PathBuf;
 
 fn test_db_dir(name: &str) -> PathBuf {
@@ -29,8 +30,7 @@ fn test_db_dir(name: &str) -> PathBuf {
 #[tokio::test]
 async fn select_one() {
     let dir = test_db_dir("smoke5");
-    let db = seekdb_async::open(&dir).await.unwrap();
-    let mut conn = db.connect(None).await.unwrap();
+    let mut conn = Conn::open(&dir, None).await.unwrap();
 
     let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
     assert_eq!(one, Some(1));
@@ -41,17 +41,8 @@ async fn select_one() {
 #[tokio::test]
 async fn open_query_txn_roundtrip() {
     let dir = test_db_dir("smoke1");
-    let db = seekdb_async::open_with(&dir, &[("memory_limit", "1G")])
-        .await
-        .unwrap();
-
-    let mut conn = db
-        .connect_opts(
-            db.opts(Some("test"))
-                .setup(vec!["SET autocommit=0".to_string()]),
-        )
-        .await
-        .unwrap();
+    let mut conn = Conn::open(&dir, Some("test")).await.unwrap();
+    conn.query_drop("SET autocommit=0").await.unwrap();
 
     let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
     assert_eq!(one, Some(1));
@@ -82,21 +73,20 @@ async fn open_query_txn_roundtrip() {
     assert_eq!(rows, vec![(3, "c".to_string())]);
 
     conn.disconnect().await.unwrap();
-    drop(db);
 }
 
 #[tokio::test]
 async fn pool_and_sock_path() {
     let dir = test_db_dir("smoke2");
-    let db = seekdb_async::open(&dir).await.unwrap();
+    let keeper = Conn::open(&dir, Some("test")).await.unwrap();
+    let sock_path = PathBuf::from(keeper.opts().socket().unwrap());
 
-    assert!(db.sock_path().ends_with("run/sql.sock"));
-    assert!(db.sock_path().exists());
-    assert_eq!(db.db_dir().join("run/sql.sock"), db.sock_path());
+    assert!(sock_path.ends_with("run/sql.sock"));
+    assert!(sock_path.exists());
+    assert_eq!(dir.join("run/sql.sock"), sock_path);
 
     let pool = Pool::new(
-        db.opts(Some("test"))
-            .setup(vec!["SET autocommit=0".to_string()]),
+        OptsBuilder::from_opts(keeper.opts().clone()).setup(vec!["SET autocommit=0".to_string()]),
     );
     let mut c = pool.get_conn().await.unwrap();
     let ac: Option<i64> = c.query_first("SELECT @@autocommit").await.unwrap();
@@ -107,16 +97,15 @@ async fn pool_and_sock_path() {
     assert_eq!(ac, Some(0));
     drop(c);
     pool.disconnect().await.unwrap();
-    drop(db);
+    keeper.disconnect().await.unwrap();
 }
 
 #[tokio::test]
 async fn two_connections_share_data() {
     let dir = test_db_dir("smoke6");
-    let db = seekdb_async::open(&dir).await.unwrap();
 
-    let mut writer = db.connect(Some("test")).await.unwrap();
-    let mut reader = db.connect(Some("test")).await.unwrap();
+    let mut writer = Conn::open(&dir, Some("test")).await.unwrap();
+    let mut reader = Conn::open(&dir, Some("test")).await.unwrap();
 
     writer
         .query_drop("DROP TABLE IF EXISTS one_col")
@@ -139,13 +128,11 @@ async fn two_connections_share_data() {
 }
 
 #[tokio::test]
-async fn two_seekdbs_share_data() {
+async fn two_conn_opens_share_data() {
     let dir = test_db_dir("smoke8");
-    let db_writer = seekdb_async::open(&dir).await.unwrap();
-    let db_reader = seekdb_async::open(&dir).await.unwrap();
 
-    let mut writer = db_writer.connect(Some("test")).await.unwrap();
-    let mut reader = db_reader.connect(Some("test")).await.unwrap();
+    let mut writer = Conn::open(&dir, Some("test")).await.unwrap();
+    let mut reader = Conn::open(&dir, Some("test")).await.unwrap();
 
     writer
         .query_drop("DROP TABLE IF EXISTS cross_handle")
@@ -208,9 +195,7 @@ async fn conn_open_shares_one_handle_per_dir() {
 #[tokio::test]
 async fn conn_keeps_instance_alive() {
     let dir = test_db_dir("smoke3");
-    let db = seekdb_async::open(&dir).await.unwrap();
-    let mut conn = db.connect(None).await.unwrap();
-    drop(db);
+    let mut conn = Conn::open(&dir, None).await.unwrap();
 
     let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
     assert_eq!(one, Some(1));
@@ -218,32 +203,30 @@ async fn conn_keeps_instance_alive() {
 }
 
 #[tokio::test]
-async fn open_twice_then_drop_in_order() {
+async fn conn_open_twice_then_disconnect_in_order() {
     let dir = test_db_dir("smoke7");
-    let db1 = seekdb_async::open(&dir).await.unwrap();
-    let db2 = seekdb_async::open(&dir).await.unwrap();
+    let conn1 = Conn::open(&dir, None).await.unwrap();
+    let conn2 = Conn::open(&dir, None).await.unwrap();
 
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    drop(db1);
-    println!("dropped db1");
+    conn1.disconnect().await.unwrap();
+    println!("disconnected conn1");
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-    drop(db2);
-    println!("dropped db2");
+    conn2.disconnect().await.unwrap();
+    println!("disconnected conn2");
 }
 
 #[tokio::test]
-async fn two_handles_same_dir() {
+async fn two_conns_same_dir() {
     let dir = test_db_dir("smoke4");
-    let db1 = seekdb_async::open(&dir).await.unwrap();
-    let db2 = seekdb_async::open(&dir).await.unwrap();
+    let conn1 = Conn::open(&dir, None).await.unwrap();
+    let mut conn2 = Conn::open(&dir, None).await.unwrap();
 
-    let mut conn = db2.connect(None).await.unwrap();
-    drop(db1);
+    conn1.disconnect().await.unwrap();
 
-    let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
+    let one: Option<i64> = conn2.query_first("SELECT 1").await.unwrap();
     assert_eq!(one, Some(1));
 
-    conn.disconnect().await.unwrap();
-    drop(db2);
+    conn2.disconnect().await.unwrap();
 }
