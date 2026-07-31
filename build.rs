@@ -36,12 +36,6 @@ fn main() {
     if std::env::var_os("DOCS_RS").is_some() {
         return;
     }
-    let in_repo_default =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../seekdb-bindings/build");
-    println!(
-        "cargo:rerun-if-changed={}",
-        in_repo_default.join(lib_file_name()).display()
-    );
 
     let mut found: Option<PathBuf> = None;
     if let Some(dir) = std::env::var_os("SEEKDB_LIB_DIR").map(PathBuf::from) {
@@ -59,9 +53,6 @@ fn main() {
             );
         }
     }
-    if found.is_none() && has_lib(&in_repo_default) {
-        found = in_repo_default.canonicalize().ok();
-    }
     if found.is_none() {
         found = download_runtime();
     }
@@ -75,8 +66,8 @@ fn main() {
         None => {
             println!(
                 "cargo:warning=libseekdb not found; `cargo build`/`cargo test` will fail at link time. \
-                 Build it (cmake -S . -B build && cmake --build build --target seekdb) \
-                 or point SEEKDB_LIB_DIR at a directory containing {} with the seekdb server binary beside it",
+                 Check the runtime download warnings above, or point SEEKDB_LIB_DIR at a directory \
+                 containing {} with the seekdb server binary beside it",
                 lib_file_name()
             );
         }

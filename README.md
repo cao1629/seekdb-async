@@ -35,8 +35,7 @@ conn.disconnect().await?;
 The build script locates the runtime in this order:
 
 1. `SEEKDB_LIB_DIR` environment variable — a directory containing `libseekdb.{dylib,so}` and `seekdb`;
-2. a sibling `../seekdb-bindings/build` checkout;
-3. **download**: a prebuilt runtime archive is fetched from this repo's [releases](https://github.com/cao1629/seekdb-async/releases) and unpacked into `OUT_DIR` (currently `aarch64-apple-darwin` only). The download honors `HTTPS_PROXY`/`HTTP_PROXY` environment variables.
+2. **download**: a prebuilt runtime archive is fetched from this repo's [releases](https://github.com/cao1629/seekdb-async/releases) and unpacked into `OUT_DIR` (currently `aarch64-apple-darwin` only). The download honors `HTTPS_PROXY`/`HTTP_PROXY` environment variables.
 
 So on a supported platform a plain `cargo build` / `cargo test` works with no setup. To use your own artifacts instead:
 
