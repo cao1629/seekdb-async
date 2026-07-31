@@ -1,0 +1,15 @@
+[package]
+name = "seekdb-async"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+links = "seekdb"
+description = "Async embedded client for seekdb: C-driver lifecycle (seekdb_open/seekdb_close) plus a mysql_async data path over the local socket"
+repository = "https://github.com/cao1629/seekdb-async"
+
+[dependencies]
+mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "derive"] }
+tokio = { version = "1", features = ["rt", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
