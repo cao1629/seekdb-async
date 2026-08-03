@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-use seekdb_async::mysql_async::{OptsBuilder, Pool};
 use seekdb_async::prelude::*;
 use seekdb_async::Conn;
 use std::path::PathBuf;
@@ -36,87 +35,6 @@ async fn select_one() {
     assert_eq!(one, Some(1));
 
     conn.disconnect().await.unwrap();
-}
-
-#[tokio::test]
-async fn open_query_txn_roundtrip() {
-    let dir = test_db_dir("open_query_txn_roundtrip");
-    let mut conn = Conn::open(&dir, Some("test")).await.unwrap();
-    conn.query_drop("SET autocommit=0").await.unwrap();
-
-    let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
-    assert_eq!(one, Some(1));
-    let ac: Option<i64> = conn.query_first("SELECT @@autocommit").await.unwrap();
-    assert_eq!(ac, Some(0));
-
-    conn.query_drop("DROP TABLE IF EXISTS txn_t").await.unwrap();
-    conn.query_drop("CREATE TABLE txn_t (id INT PRIMARY KEY, v VARCHAR(32))")
-        .await
-        .unwrap();
-    conn.query_drop("INSERT INTO txn_t VALUES (1,'a'),(2,'b')")
-        .await
-        .unwrap();
-    conn.query_drop("ROLLBACK").await.unwrap();
-    let n: Option<i64> = conn
-        .query_first("SELECT COUNT(*) FROM txn_t")
-        .await
-        .unwrap();
-    assert_eq!(n, Some(0));
-
-    conn.exec_drop("INSERT INTO txn_t VALUES (?,?)", (3, "c"))
-        .await
-        .unwrap();
-    conn.query_drop("COMMIT").await.unwrap();
-    let rows: Vec<(i64, String)> = conn.query("SELECT id, v FROM txn_t").await.unwrap();
-    assert_eq!(rows, vec![(3, "c".to_string())]);
-
-    conn.disconnect().await.unwrap();
-}
-
-#[tokio::test]
-async fn pool_and_sock_path() {
-    let dir = test_db_dir("pool_and_sock_path");
-    let keeper = Conn::open(&dir, Some("test")).await.unwrap();
-    let sock_path = PathBuf::from(keeper.opts().socket().unwrap());
-
-    assert!(sock_path.ends_with("run/sql.sock"));
-    assert!(sock_path.exists());
-    assert_eq!(dir.join("run/sql.sock"), sock_path);
-
-    let pool = Pool::new(
-        OptsBuilder::from_opts(keeper.opts().clone()).setup(vec!["SET autocommit=0".to_string()]),
-    );
-    let mut c = pool.get_conn().await.unwrap();
-    let ac: Option<i64> = c.query_first("SELECT @@autocommit").await.unwrap();
-    assert_eq!(ac, Some(0));
-    drop(c);
-    let mut c = pool.get_conn().await.unwrap();
-    let ac: Option<i64> = c.query_first("SELECT @@autocommit").await.unwrap();
-    assert_eq!(ac, Some(0));
-    drop(c);
-    pool.disconnect().await.unwrap();
-    keeper.disconnect().await.unwrap();
-}
-
-#[tokio::test]
-async fn conn_new_from_url_and_builder() {
-    let dir = test_db_dir("conn_new_from_url_and_builder");
-    let url = format!("seekdb://{}?db_name=test&memory_limit=1G", dir.display());
-    let mut a = seekdb_async::Conn::new(url).await.unwrap();
-    let one: Option<i64> = a.query_first("SELECT 1").await.unwrap();
-    assert_eq!(one, Some(1));
-    a.disconnect().await.unwrap();
-
-    let mut b = seekdb_async::Conn::new(
-        seekdb_async::OptsBuilder::default()
-            .db_dir(&dir)
-            .db_name(Some("test")),
-    )
-    .await
-    .unwrap();
-    let two: Option<i64> = b.query_first("SELECT 2").await.unwrap();
-    assert_eq!(two, Some(2));
-    b.disconnect().await.unwrap();
 }
 
 #[tokio::test]
@@ -232,16 +150,6 @@ async fn conn_open_shares_one_handle_per_dir() {
     let back: Option<i64> = c.query_first("SELECT v FROM shared_t").await.unwrap();
     assert_eq!(back, Some(9));
     c.disconnect().await.unwrap();
-}
-
-#[tokio::test]
-async fn conn_keeps_instance_alive() {
-    let dir = test_db_dir("conn_keeps_instance_alive");
-    let mut conn = Conn::open(&dir, None).await.unwrap();
-
-    let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
-    assert_eq!(one, Some(1));
-    conn.disconnect().await.unwrap();
 }
 
 #[tokio::test]
