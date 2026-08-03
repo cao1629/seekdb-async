@@ -65,33 +65,6 @@ let mut conn = pool.get_conn().await?;
 
 Sessions use the MySQL default `autocommit=1`; run `SET autocommit=0` for the transactional behavior of the Python binding.
 
-## Deployment
-
-The server binary is a separate process, so a distribution is a directory, not a single file:
-
-```
-myapp-dist/
-├── myapp
-├── libseekdb.dylib
-└── seekdb
-```
-
-Bake a relative rpath in your app's `build.rs` so the directory is relocatable:
-
-```rust
-fn main() {
-    if let Ok(dir) = std::env::var("DEP_SEEKDB_LIB_DIR") {
-        println!("cargo:rustc-link-arg=-Wl,-rpath,{dir}");
-    }
-    #[cfg(target_os = "macos")]
-    println!("cargo:rustc-link-arg=-Wl,-rpath,@loader_path");
-    #[cfg(not(target_os = "macos"))]
-    println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
-}
-```
-
-See [seekdb-hello](https://github.com/cao1629/seekdb-hello) for a complete example app with a packaging script.
-
 ## License
 
 Apache-2.0
