@@ -16,6 +16,19 @@ conn.disconnect().await?;
 
 `Conn::open` shares one instance handle per `db_dir` within the process; when the last `Conn` for a directory is dropped, the handle is released and the server exits on its own once no client (in any process) remains.
 
+Connection creation mirrors `mysql_async`: `Conn::new` and `Pool::new` take `impl Into<Opts>` — an `OptsBuilder` or a `seekdb://` URL (`seekdb://<db_dir>?db_name=<db>&<param>=<value>`, where extra query pairs are first-init server parameters):
+
+```rust
+let conn = seekdb_async::Conn::new("seekdb://./my.db?db_name=test&memory_limit=2G").await?;
+
+let pool = seekdb_async::Pool::new(
+    seekdb_async::OptsBuilder::default().db_dir("./my.db").db_name(Some("test")),
+);
+let conn = pool.get_conn().await?;
+```
+
+`Pool::new` is lazy and cheap, clones share the pool, and pooled connections keep the instance alive too.
+
 ## Requirements
 
 - POSIX (Linux / macOS). The embedded server is reachable only over a unix socket.
