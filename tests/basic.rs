@@ -29,7 +29,7 @@ fn test_db_dir(name: &str) -> PathBuf {
 
 #[tokio::test]
 async fn select_one() {
-    let dir = test_db_dir("smoke5");
+    let dir = test_db_dir("select_one");
     let mut conn = Conn::open(&dir, None).await.unwrap();
 
     let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
@@ -40,7 +40,7 @@ async fn select_one() {
 
 #[tokio::test]
 async fn open_query_txn_roundtrip() {
-    let dir = test_db_dir("smoke1");
+    let dir = test_db_dir("open_query_txn_roundtrip");
     let mut conn = Conn::open(&dir, Some("test")).await.unwrap();
     conn.query_drop("SET autocommit=0").await.unwrap();
 
@@ -49,27 +49,25 @@ async fn open_query_txn_roundtrip() {
     let ac: Option<i64> = conn.query_first("SELECT @@autocommit").await.unwrap();
     assert_eq!(ac, Some(0));
 
-    conn.query_drop("DROP TABLE IF EXISTS smoke_t")
+    conn.query_drop("DROP TABLE IF EXISTS txn_t").await.unwrap();
+    conn.query_drop("CREATE TABLE txn_t (id INT PRIMARY KEY, v VARCHAR(32))")
         .await
         .unwrap();
-    conn.query_drop("CREATE TABLE smoke_t (id INT PRIMARY KEY, v VARCHAR(32))")
-        .await
-        .unwrap();
-    conn.query_drop("INSERT INTO smoke_t VALUES (1,'a'),(2,'b')")
+    conn.query_drop("INSERT INTO txn_t VALUES (1,'a'),(2,'b')")
         .await
         .unwrap();
     conn.query_drop("ROLLBACK").await.unwrap();
     let n: Option<i64> = conn
-        .query_first("SELECT COUNT(*) FROM smoke_t")
+        .query_first("SELECT COUNT(*) FROM txn_t")
         .await
         .unwrap();
     assert_eq!(n, Some(0));
 
-    conn.exec_drop("INSERT INTO smoke_t VALUES (?,?)", (3, "c"))
+    conn.exec_drop("INSERT INTO txn_t VALUES (?,?)", (3, "c"))
         .await
         .unwrap();
     conn.query_drop("COMMIT").await.unwrap();
-    let rows: Vec<(i64, String)> = conn.query("SELECT id, v FROM smoke_t").await.unwrap();
+    let rows: Vec<(i64, String)> = conn.query("SELECT id, v FROM txn_t").await.unwrap();
     assert_eq!(rows, vec![(3, "c".to_string())]);
 
     conn.disconnect().await.unwrap();
@@ -77,7 +75,7 @@ async fn open_query_txn_roundtrip() {
 
 #[tokio::test]
 async fn pool_and_sock_path() {
-    let dir = test_db_dir("smoke2");
+    let dir = test_db_dir("pool_and_sock_path");
     let keeper = Conn::open(&dir, Some("test")).await.unwrap();
     let sock_path = PathBuf::from(keeper.opts().socket().unwrap());
 
@@ -102,7 +100,7 @@ async fn pool_and_sock_path() {
 
 #[tokio::test]
 async fn conn_new_from_url_and_builder() {
-    let dir = test_db_dir("smoke10");
+    let dir = test_db_dir("conn_new_from_url_and_builder");
     let url = format!("seekdb://{}?db_name=test&memory_limit=1G", dir.display());
     let mut a = seekdb_async::Conn::new(url).await.unwrap();
     let one: Option<i64> = a.query_first("SELECT 1").await.unwrap();
@@ -123,7 +121,7 @@ async fn conn_new_from_url_and_builder() {
 
 #[tokio::test]
 async fn pool_cycle() {
-    let dir = test_db_dir("smoke11");
+    let dir = test_db_dir("pool_cycle");
     let pool = seekdb_async::Pool::new(
         seekdb_async::OptsBuilder::default()
             .db_dir(&dir)
@@ -146,7 +144,7 @@ async fn pool_cycle() {
 
 #[tokio::test]
 async fn two_connections_share_data() {
-    let dir = test_db_dir("smoke6");
+    let dir = test_db_dir("two_connections_share_data");
 
     let mut writer = Conn::open(&dir, Some("test")).await.unwrap();
     let mut reader = Conn::open(&dir, Some("test")).await.unwrap();
@@ -173,7 +171,7 @@ async fn two_connections_share_data() {
 
 #[tokio::test]
 async fn two_conn_opens_share_data() {
-    let dir = test_db_dir("smoke8");
+    let dir = test_db_dir("two_conn_opens_share_data");
 
     let mut writer = Conn::open(&dir, Some("test")).await.unwrap();
     let mut reader = Conn::open(&dir, Some("test")).await.unwrap();
@@ -203,7 +201,7 @@ async fn two_conn_opens_share_data() {
 
 #[tokio::test]
 async fn conn_open_shares_one_handle_per_dir() {
-    let dir = test_db_dir("smoke9");
+    let dir = test_db_dir("conn_open_shares_one_handle_per_dir");
 
     let mut a = Conn::open(&dir, Some("test")).await.unwrap();
     let mut b = Conn::open(&dir, Some("test")).await.unwrap();
@@ -238,7 +236,7 @@ async fn conn_open_shares_one_handle_per_dir() {
 
 #[tokio::test]
 async fn conn_keeps_instance_alive() {
-    let dir = test_db_dir("smoke3");
+    let dir = test_db_dir("conn_keeps_instance_alive");
     let mut conn = Conn::open(&dir, None).await.unwrap();
 
     let one: Option<i64> = conn.query_first("SELECT 1").await.unwrap();
@@ -248,7 +246,7 @@ async fn conn_keeps_instance_alive() {
 
 #[tokio::test]
 async fn conn_open_twice_then_disconnect_in_order() {
-    let dir = test_db_dir("smoke7");
+    let dir = test_db_dir("conn_open_twice_then_disconnect_in_order");
     let conn1 = Conn::open(&dir, None).await.unwrap();
     let conn2 = Conn::open(&dir, None).await.unwrap();
 
@@ -263,7 +261,7 @@ async fn conn_open_twice_then_disconnect_in_order() {
 
 #[tokio::test]
 async fn two_conns_same_dir() {
-    let dir = test_db_dir("smoke4");
+    let dir = test_db_dir("two_conns_same_dir");
     let conn1 = Conn::open(&dir, None).await.unwrap();
     let mut conn2 = Conn::open(&dir, None).await.unwrap();
 
