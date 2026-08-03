@@ -65,15 +65,6 @@ let mut conn = pool.get_conn().await?;
 
 Sessions use the MySQL default `autocommit=1`; run `SET autocommit=0` for the transactional behavior of the Python binding.
 
-## Configuration
-
-| Variable | Effect |
-|---|---|
-| `SEEKDB_LIB_DIR` | Build time: use this directory (containing `libseekdb.{dylib,so}` and `seekdb`) instead of downloading the runtime |
-| `HTTPS_PROXY` / `HTTP_PROXY` | Proxy for the runtime download |
-
-The runtime archive comes from this repo's [releases](https://github.com/cao1629/seekdb-async/releases) and unpacks into `OUT_DIR`. Prebuilt target: `aarch64-apple-darwin`.
-
 ## Deployment
 
 The server binary is a separate process, so a distribution is a directory, not a single file:
@@ -100,26 +91,6 @@ fn main() {
 ```
 
 See [seekdb-hello](https://github.com/cao1629/seekdb-hello) for a complete example app with a packaging script.
-
-## Limitations
-
-- POSIX only (the embedded server listens on a unix socket)
-- `db_dir` must be valid UTF-8 and short enough that `<db_dir>/run/sql.sock` fits the OS socket-path limit
-- Opening blocks until the server accepts SQL, without a timeout; first init runs the full bootstrap
-- Right after opening a previously initialized `db_dir`, the schema may lag for a couple of seconds (`1049` / `1146` errors) — retry briefly
-
-## Development
-
-```bash
-# Build (downloads the runtime on first build)
-cargo build
-
-# Test (spawns real servers under target/tmp)
-cargo test
-
-# Lint
-cargo clippy --all-targets -- -D warnings
-```
 
 ## License
 
