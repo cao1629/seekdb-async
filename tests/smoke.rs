@@ -101,6 +101,50 @@ async fn pool_and_sock_path() {
 }
 
 #[tokio::test]
+async fn conn_new_from_url_and_builder() {
+    let dir = test_db_dir("smoke10");
+    let url = format!("seekdb://{}?db_name=test&memory_limit=1G", dir.display());
+    let mut a = seekdb_async::Conn::new(url).await.unwrap();
+    let one: Option<i64> = a.query_first("SELECT 1").await.unwrap();
+    assert_eq!(one, Some(1));
+    a.disconnect().await.unwrap();
+
+    let mut b = seekdb_async::Conn::new(
+        seekdb_async::OptsBuilder::default()
+            .db_dir(&dir)
+            .db_name(Some("test")),
+    )
+    .await
+    .unwrap();
+    let two: Option<i64> = b.query_first("SELECT 2").await.unwrap();
+    assert_eq!(two, Some(2));
+    b.disconnect().await.unwrap();
+}
+
+#[tokio::test]
+async fn pool_cycle() {
+    let dir = test_db_dir("smoke11");
+    let pool = seekdb_async::Pool::new(
+        seekdb_async::OptsBuilder::default()
+            .db_dir(&dir)
+            .db_name(Some("test")),
+    );
+
+    let mut a = pool.get_conn().await.unwrap();
+    a.query_drop("DROP TABLE IF EXISTS pool_t").await.unwrap();
+    a.query_drop("CREATE TABLE pool_t (v INT)").await.unwrap();
+    a.query_drop("INSERT INTO pool_t VALUES (5)").await.unwrap();
+    drop(a);
+
+    let mut b = pool.get_conn().await.unwrap();
+    let got: Option<i64> = b.query_first("SELECT v FROM pool_t").await.unwrap();
+    assert_eq!(got, Some(5));
+    drop(b);
+
+    pool.disconnect().await.unwrap();
+}
+
+#[tokio::test]
 async fn two_connections_share_data() {
     let dir = test_db_dir("smoke6");
 

@@ -17,50 +17,57 @@
 //! Launcher for embedded [seekdb](https://github.com/oceanbase/seekdb),
 //! designed to pair with [`mysql_async`].
 //!
-//! [`open`] goes through the C driver (`libseekdb`): it spawns or attaches to
-//! a server process rooted at `db_dir` and holds the lock that keeps it
-//! alive. [`Seekdb::connect`] then wraps a plain [`mysql_async::Conn`]
-//! dialed at the instance's unix socket ([`Seekdb::sock_path`]) into
-//! [`Conn`], which derefs to the full `mysql_async` API:
+//! [`Conn::open`] goes through the C driver (`libseekdb`), spawning or
+//! attaching to a server process rooted at `db_dir`, then returns a connected
+//! [`Conn`] that derefs to the full [`mysql_async`] API:
 //!
 //! ```no_run
 //! use seekdb_async::prelude::*;
 //!
 //! # async fn demo() -> Result<(), Box<dyn std::error::Error>> {
-//! let db = seekdb_async::open("./my.db").await?;
-//! let mut conn = db.connect(Some("test")).await?;
+//! let mut conn = seekdb_async::Conn::open("./my.db", Some("test")).await?;
 //! let one: Option<i64> = conn.query_first("SELECT 1").await?;
 //! conn.disconnect().await?;
-//! drop(db);
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! [`Conn::open`] is a one-step alternative: give it a `db_dir` and get a
-//! connected [`Conn`] directly, with one shared instance handle per
-//! `db_dir` in this process (released when the last such `Conn` goes away).
+//! The entry points mirror [`mysql_async`]: [`Conn::new`] and [`Pool::new`]
+//! take `impl Into<Opts>` — an [`OptsBuilder`] or a `seekdb://` URL:
+//!
+//! ```no_run
+//! # async fn demo() -> seekdb_async::Result<()> {
+//! let conn = seekdb_async::Conn::new("seekdb://./my.db?db_name=test").await?;
+//! let pool = seekdb_async::Pool::new(
+//!     seekdb_async::OptsBuilder::default()
+//!         .db_dir("./my.db")
+//!         .db_name(Some("test")),
+//! );
+//! # Ok(()) }
+//! ```
+//!
+//! All calls for the same `db_dir` share one instance handle in this process;
+//! it is released when the last such [`Conn`] goes away.
 //!
 //! # Server lifetime
 //!
 //! The server exits by itself once the last hold on its `db_dir` — in any
 //! process, including C and Python clients sharing the same directory — is
-//! released. A [`Conn`] holds the [`Seekdb`] it came from, so the server
-//! cannot shut down under connections made through
-//! [`connect`](Seekdb::connect)/[`connect_opts`](Seekdb::connect_opts) —
-//! drop order never matters there. Raw `mysql_async` connections or pools
-//! you build directly from [`Seekdb::opts`] carry no such hold: keep the
-//! `Seekdb` alive yourself while they are in use. The server can still die
-//! externally (it shares the host's process group, so a terminal Ctrl+C
-//! kills it; crashes too) — connections then fail with connection-reset /
-//! broken-pipe / connection-refused errors, and the remedy is to reopen.
+//! released. A [`Conn`] holds its underlying instance, so the server cannot
+//! shut down while the connection is alive. Raw [`mysql_async::Conn`]s or
+//! pools built from its options carry no such hold: keep the original
+//! [`Conn`] alive while they are in use. The server can still die externally
+//! (it shares the host's process group, so a terminal Ctrl+C kills it; crashes
+//! too) — connections then fail with connection-reset / broken-pipe /
+//! connection-refused errors, and the remedy is to reopen.
 //!
 //! # Session notes
 //!
 //! - Sessions default to the MySQL default `autocommit=1`. For the
-//!   transactional behavior of the Python binding, add
-//!   `.setup(vec!["SET autocommit=0".into()])` to the [`Seekdb::opts`]
-//!   builder — `setup` commands are re-applied after pool connection resets.
-//! - Right after [`open`] on a restarted `db_dir`, the server's user schema
+//!   transactional behavior of the Python binding, execute
+//!   `SET autocommit=0` after opening the connection. For pools, add it to the
+//!   options' `setup` commands so it is re-applied after connection resets.
+//! - Right after [`Conn::open`] on a restarted `db_dir`, the server's user schema
 //!   may lag readiness by a couple of seconds: connects can briefly fail
 //!   with `1049 Unknown database` and first queries with `1146 Table
 //!   doesn't exist`, and during startup the socket may transiently refuse.
@@ -70,12 +77,12 @@
 //!
 //! - POSIX only (an embedded server listens only on a unix socket).
 //! - `db_dir` must be valid UTF-8 and short enough that
-//!   `<db_dir>/run/sql.sock` fits the OS socket-path limit; [`open`] checks
+//!   `<db_dir>/run/sql.sock` fits the OS socket-path limit; [`Conn::open`] checks
 //!   both up front.
 //! - The socket is created with the spawning process's umask; a restrictive
 //!   umask can make it unreachable for other-user clients of the same
 //!   `db_dir`.
-//! - [`open`] blocks (on a background thread) until the server accepts SQL,
+//! - [`Conn::open`] blocks (on a background thread) until the server accepts SQL,
 //!   **without a timeout**, exactly like the C driver — first init runs the
 //!   full bootstrap, and the future cannot cancel the underlying C call.
 //!   Prefer `Runtime::shutdown_timeout` when tearing down the runtime.
@@ -184,78 +191,146 @@ impl Drop for Inner {
     }
 }
 
-/// A running (or attached) embedded seekdb instance.
+const DEFAULT_DB_DIR: &str = "./seekdb.db";
+
+/// Connection options, mirroring [`mysql_async::Opts`]: build one with
+/// [`OptsBuilder`] or parse one from a `seekdb://` URL, and pass it to
+/// [`Conn::new`] or [`Pool::new`] (both take `impl Into<Opts>`).
 ///
-/// Cloning is cheap and shares the same handle. The handle is released once
-/// the last clone **and every [`Conn`] created from it** are dropped; the
-/// server exits once no handle in any process remains.
-#[derive(Clone)]
-pub struct Seekdb {
-    inner: Arc<Inner>,
+/// URL form: `seekdb://<db_dir>?db_name=<db>&<param>=<value>…` — the path is
+/// the database directory, `db_name` selects the session's default database,
+/// and every other query pair is a first-init server parameter, e.g.
+/// `seekdb://./my.db?db_name=test&memory_limit=2G`.
+#[derive(Debug, Clone)]
+pub struct Opts {
+    db_dir: PathBuf,
+    db_name: Option<String>,
+    params: Vec<(String, String)>,
 }
 
-impl std::fmt::Debug for Seekdb {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Seekdb")
-            .field("db_dir", &self.inner.db_dir)
-            .finish()
+impl Default for Opts {
+    fn default() -> Self {
+        Opts {
+            db_dir: PathBuf::from(DEFAULT_DB_DIR),
+            db_name: None,
+            params: Vec::new(),
+        }
     }
 }
 
-impl Seekdb {
+impl Opts {
+    pub fn from_url(url: &str) -> Result<Opts> {
+        let rest = url.strip_prefix("seekdb://").ok_or_else(|| {
+            Error::InvalidInput(format!("seekdb URL must start with seekdb://, got {url:?}"))
+        })?;
+        let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
+        if path.is_empty() {
+            return Err(Error::InvalidInput(
+                "seekdb URL is missing the db_dir path".into(),
+            ));
+        }
+        let mut opts = Opts {
+            db_dir: PathBuf::from(path),
+            db_name: None,
+            params: Vec::new(),
+        };
+        for pair in query.split('&').filter(|s| !s.is_empty()) {
+            let (key, value) = pair.split_once('=').ok_or_else(|| {
+                Error::InvalidInput(format!("invalid query pair {pair:?} in seekdb URL"))
+            })?;
+            if key == "db_name" {
+                opts.db_name = Some(value.to_string());
+            } else {
+                opts.params.push((key.to_string(), value.to_string()));
+            }
+        }
+        Ok(opts)
+    }
+
     pub fn db_dir(&self) -> &Path {
-        &self.inner.db_dir
+        &self.db_dir
     }
 
-    /// The instance's unix socket: `<db_dir>/run/sql.sock`. This is the same
-    /// path the C driver itself dials; it exists and accepts connections by
-    /// the time [`open`] returns.
-    pub fn sock_path(&self) -> &Path {
-        &self.inner.sock_path
+    pub fn db_name(&self) -> Option<&str> {
+        self.db_name.as_deref()
     }
 
-    /// An [`mysql_async::OptsBuilder`] pre-filled with the socket path and
-    /// user `root` (empty password) — extend it (`setup`, pool options, …)
-    /// and pass it to [`connect_opts`](Self::connect_opts) or
-    /// [`mysql_async::Pool::new`]. Note connections built from these opts
-    /// **without** going through [`connect`](Self::connect)/`connect_opts`
-    /// do not keep the instance alive — keep the `Seekdb` around yourself.
-    pub fn opts(&self, db_name: Option<&str>) -> mysql_async::OptsBuilder {
+    pub fn parameters(&self) -> &[(String, String)] {
+        &self.params
+    }
+}
+
+impl From<&str> for Opts {
+    /// Panics on an invalid URL, matching `mysql_async`'s `From<&str> for
+    /// Opts`; use [`Opts::from_url`] for a fallible parse.
+    fn from(url: &str) -> Opts {
+        Opts::from_url(url).expect("invalid seekdb URL")
+    }
+}
+
+impl From<String> for Opts {
+    fn from(url: String) -> Opts {
+        Opts::from(url.as_str())
+    }
+}
+
+/// Builder for [`Opts`], mirroring [`mysql_async::OptsBuilder`].
+#[derive(Debug, Clone, Default)]
+pub struct OptsBuilder {
+    opts: Opts,
+}
+
+impl OptsBuilder {
+    /// The database directory (defaults to `./seekdb.db`, same as the other
+    /// seekdb bindings).
+    pub fn db_dir(mut self, db_dir: impl AsRef<Path>) -> Self {
+        self.opts.db_dir = db_dir.as_ref().to_path_buf();
+        self
+    }
+
+    /// The session's default database (the MySQL handshake field, like
+    /// `mysql -D`); `None` means no default — qualify table names or `USE`
+    /// one later.
+    pub fn db_name<T: Into<String>>(mut self, db_name: Option<T>) -> Self {
+        self.opts.db_name = db_name.map(Into::into);
+        self
+    }
+
+    /// A server parameter, applied **only when `db_dir` is initialized for
+    /// the first time** (persisted afterwards; ignored on restart). Unless
+    /// overridden, first init seeds `memory_limit=1G` and `log_disk_size=2G`.
+    /// The C driver's reserved `port` key is rejected at connect time.
+    pub fn parameter(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.opts.params.push((key.into(), value.into()));
+        self
+    }
+}
+
+impl From<OptsBuilder> for Opts {
+    fn from(builder: OptsBuilder) -> Opts {
+        builder.opts
+    }
+}
+
+fn mysql_opts_for(inner: &Inner, db_name: Option<&str>) -> mysql_async::Opts {
+    mysql_async::Opts::from(
         mysql_async::OptsBuilder::default()
             .socket(Some(
-                self.inner
+                inner
                     .sock_path
                     .to_str()
                     .expect("validated UTF-8 in open")
                     .to_string(),
             ))
             .user(Some("root".to_string()))
-            .db_name(db_name.map(str::to_string))
-    }
-
-    /// Connects with the default [`opts`](Self::opts). The returned [`Conn`]
-    /// keeps this instance alive. `db_name` is the session's default
-    /// database (the MySQL handshake field, like `mysql -D`); `None` means
-    /// no default — qualify table names or `USE` one later.
-    pub async fn connect(&self, db_name: Option<&str>) -> Result<Conn> {
-        self.connect_opts(self.opts(db_name)).await
-    }
-
-    /// Connects with caller-customized opts (typically built from
-    /// [`opts`](Self::opts), e.g. with a `setup` command added).
-    pub async fn connect_opts(&self, opts: impl Into<mysql_async::Opts>) -> Result<Conn> {
-        let conn = mysql_async::Conn::new(opts.into()).await?;
-        Ok(Conn {
-            conn,
-            _db: self.inner.clone(),
-        })
-    }
+            .db_name(db_name.map(str::to_string)),
+    )
 }
 
 /// A SQL session: [`mysql_async::Conn`] plus a hold on the [`Seekdb`]
 /// instance it belongs to, so the server cannot shut down under a live
 /// connection. The full `mysql_async` API
-/// ([`prelude::Queryable`](prelude::Queryable) etc.) is available through
+/// ([`prelude::Queryable`] etc.) is available through
 /// deref.
 pub struct Conn {
     conn: mysql_async::Conn,
@@ -263,20 +338,39 @@ pub struct Conn {
 }
 
 impl Conn {
-    /// One-step connect: open (or reuse) the instance at `db_dir`, then
-    /// connect a session with `db_name` as the default database.
+    /// Opens a connection from [`Opts`], an [`OptsBuilder`], or a
+    /// `seekdb://` URL string — the analogue of [`mysql_async::Conn::new`]:
     ///
-    /// Instances opened this way are shared per process: all `Conn::open`
-    /// calls for the same `db_dir` (same absolute path) reuse one underlying
-    /// `seekdb_open` handle. When the last such [`Conn`] is dropped the
-    /// handle is released — the server exits if no other client (in any
-    /// process) still holds it — and the next `Conn::open` opens afresh.
-    /// Handles from [`crate::open`] are independent and never shared with
-    /// this registry.
+    /// ```no_run
+    /// # async fn demo() -> seekdb_async::Result<()> {
+    /// let conn = seekdb_async::Conn::new("seekdb://./my.db?db_name=test").await?;
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// The instance at `db_dir` is opened (or reused) first: all connections
+    /// for the same `db_dir` (same absolute path) in this process share one
+    /// underlying `seekdb_open` handle. When the last such [`Conn`] is
+    /// dropped the handle is released — the server exits if no other client
+    /// (in any process) still holds it — and the next connect opens afresh.
+    /// Server parameters in the opts apply only if this call performs the
+    /// first-ever initialization of `db_dir`.
+    pub async fn new(opts: impl Into<Opts>) -> Result<Conn> {
+        let opts = opts.into();
+        validate_params(&opts.params)?;
+        let inner = shared_inner(&opts.db_dir, opts.params.clone()).await?;
+        let conn = mysql_async::Conn::new(mysql_opts_for(&inner, opts.db_name.as_deref())).await?;
+        Ok(Conn { conn, _db: inner })
+    }
+
+    /// Shorthand for [`Conn::new`] with just a directory and default
+    /// database.
     pub async fn open(db_dir: impl AsRef<Path>, db_name: Option<&str>) -> Result<Conn> {
-        let inner = shared_inner(db_dir.as_ref()).await?;
-        let db = Seekdb { inner };
-        db.connect(db_name).await
+        Conn::new(
+            OptsBuilder::default()
+                .db_dir(db_dir.as_ref())
+                .db_name(db_name),
+        )
+        .await
     }
 
     pub async fn disconnect(self) -> Result<()> {
@@ -309,29 +403,83 @@ impl std::fmt::Debug for Conn {
     }
 }
 
-/// Opens the instance at `db_dir` with default parameters. See
-/// [`open_with`] and the crate docs for blocking behavior and constraints.
-pub async fn open(db_dir: impl AsRef<Path>) -> Result<Seekdb> {
-    open_with(db_dir, &[]).await
+/// A connection pool, mirroring [`mysql_async::Pool`]: `new` is cheap and
+/// lazy (nothing is opened until the first [`get_conn`](Self::get_conn)),
+/// cloning shares the pool, and every pooled [`Conn`] keeps the underlying
+/// instance alive.
+///
+/// Await [`disconnect`](Self::disconnect) before shutting down the tokio
+/// runtime, and drop all pooled connections first — like `mysql_async`, it
+/// resolves only once every connection has been returned.
+#[derive(Clone)]
+pub struct Pool {
+    state: Arc<PoolState>,
 }
 
-/// Opens with server parameters (e.g. `[("memory_limit", "2G")]`), which
-/// take effect **only when `db_dir` is initialized for the first time**
-/// (persisted afterwards; ignored on restart so persisted values survive).
-/// Unless overridden, first init seeds `memory_limit=1G` and
-/// `log_disk_size=2G`.
-///
-/// The C driver's reserved `port` key is rejected: an embedded server has no
-/// TCP listener, and passing `port` would make the C driver poll a TCP
-/// endpoint that never comes up, hanging forever.
-pub async fn open_with(db_dir: impl AsRef<Path>, params: &[(&str, &str)]) -> Result<Seekdb> {
+struct PoolState {
+    opts: Opts,
+    init: tokio::sync::OnceCell<(Arc<Inner>, mysql_async::Pool)>,
+}
+
+impl Pool {
+    pub fn new(opts: impl Into<Opts>) -> Pool {
+        Pool {
+            state: Arc::new(PoolState {
+                opts: opts.into(),
+                init: tokio::sync::OnceCell::new(),
+            }),
+        }
+    }
+
+    async fn instance(&self) -> Result<&(Arc<Inner>, mysql_async::Pool)> {
+        self.state
+            .init
+            .get_or_try_init(|| async {
+                validate_params(&self.state.opts.params)?;
+                let inner =
+                    shared_inner(&self.state.opts.db_dir, self.state.opts.params.clone()).await?;
+                let pool = mysql_async::Pool::new(mysql_opts_for(
+                    &inner,
+                    self.state.opts.db_name.as_deref(),
+                ));
+                Ok((inner, pool))
+            })
+            .await
+    }
+
+    pub async fn get_conn(&self) -> Result<Conn> {
+        let (inner, pool) = self.instance().await?;
+        let conn = pool.get_conn().await?;
+        Ok(Conn {
+            conn,
+            _db: inner.clone(),
+        })
+    }
+
+    pub async fn disconnect(self) -> Result<()> {
+        if let Some((_, pool)) = self.state.init.get() {
+            pool.clone().disconnect().await?;
+        }
+        Ok(())
+    }
+}
+
+impl std::fmt::Debug for Pool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pool")
+            .field("db_dir", &self.state.opts.db_dir)
+            .finish()
+    }
+}
+
+fn validate_params(params: &[(String, String)]) -> Result<()> {
     for (key, _) in params {
         if key.is_empty() {
             return Err(Error::InvalidInput(
                 "server parameter keys must be non-empty".into(),
             ));
         }
-        if *key == "port" {
+        if key == "port" {
             return Err(Error::InvalidInput(
                 "parameter \"port\" is not supported: an embedded seekdb server has no TCP \
                  listener, and this client always connects via <db_dir>/run/sql.sock"
@@ -339,13 +487,7 @@ pub async fn open_with(db_dir: impl AsRef<Path>, params: &[(&str, &str)]) -> Res
             ));
         }
     }
-    let abs = absolutize(db_dir.as_ref())?;
-    let owned: Vec<(String, String)> = params
-        .iter()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .collect();
-    let inner = open_inner(abs, owned).await?;
-    Ok(Seekdb { inner })
+    Ok(())
 }
 
 async fn open_inner(abs: PathBuf, params: Vec<(String, String)>) -> Result<Arc<Inner>> {
@@ -371,7 +513,7 @@ async fn open_inner(abs: PathBuf, params: Vec<(String, String)>) -> Result<Arc<I
     }))
 }
 
-async fn shared_inner(db_dir: &Path) -> Result<Arc<Inner>> {
+async fn shared_inner(db_dir: &Path, params: Vec<(String, String)>) -> Result<Arc<Inner>> {
     let abs = absolutize(db_dir)?;
     {
         let map = SHARED.lock().unwrap();
@@ -379,7 +521,7 @@ async fn shared_inner(db_dir: &Path) -> Result<Arc<Inner>> {
             return Ok(existing);
         }
     }
-    let fresh = open_inner(abs.clone(), Vec::new()).await?;
+    let fresh = open_inner(abs.clone(), params).await?;
     let mut map = SHARED.lock().unwrap();
     if let Some(existing) = map.get(&abs).and_then(Weak::upgrade) {
         return Ok(existing);
@@ -476,12 +618,53 @@ mod tests {
 
     #[tokio::test]
     async fn port_parameter_is_rejected() {
-        let err = open_with("/tmp/x", &[("port", "3306")]).await.unwrap_err();
+        let err = Conn::new(
+            OptsBuilder::default()
+                .db_dir("/tmp/x")
+                .parameter("port", "3306"),
+        )
+        .await
+        .unwrap_err();
         assert!(err.to_string().contains("port"));
     }
 
     #[tokio::test]
     async fn empty_key_is_rejected() {
-        assert!(open_with("/tmp/x", &[("", "v")]).await.is_err());
+        assert!(
+            Conn::new(OptsBuilder::default().db_dir("/tmp/x").parameter("", "v"))
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn url_parses_path_db_name_and_params() {
+        let opts = Opts::from_url("seekdb://./my.db?db_name=test&memory_limit=2G").unwrap();
+        assert_eq!(opts.db_dir(), Path::new("./my.db"));
+        assert_eq!(opts.db_name(), Some("test"));
+        assert_eq!(
+            opts.parameters(),
+            &[("memory_limit".to_string(), "2G".to_string())]
+        );
+    }
+
+    #[test]
+    fn url_without_query() {
+        let opts = Opts::from_url("seekdb:///data/db").unwrap();
+        assert_eq!(opts.db_dir(), Path::new("/data/db"));
+        assert_eq!(opts.db_name(), None);
+        assert!(opts.parameters().is_empty());
+    }
+
+    #[test]
+    fn url_rejects_wrong_scheme_and_empty_path() {
+        assert!(Opts::from_url("mysql://x").is_err());
+        assert!(Opts::from_url("seekdb://").is_err());
+        assert!(Opts::from_url("seekdb://x?bad").is_err());
+    }
+
+    #[test]
+    fn default_db_dir_matches_other_bindings() {
+        assert_eq!(Opts::default().db_dir(), Path::new("./seekdb.db"));
     }
 }

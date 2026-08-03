@@ -9,7 +9,7 @@ repository = "https://github.com/cao1629/seekdb-async"
 
 [dependencies]
 mysql_async = { version = "0.37", default-features = false, features = ["minimal-rust", "derive"] }
-tokio = { version = "1", features = ["rt", "time"] }
+tokio = { version = "1", features = ["rt", "sync", "time"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }

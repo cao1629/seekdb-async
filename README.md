@@ -14,7 +14,7 @@ let rows: Vec<(i64, String)> = conn.query("SELECT id, v FROM t").await?;
 conn.disconnect().await?;
 ```
 
-`Conn::open` shares one instance handle per `db_dir` within the process; when the last `Conn` for a directory is dropped, the handle is released and the server exits on its own once no client (in any process) remains. For explicit instance control use `seekdb_async::open` / `Seekdb`.
+`Conn::open` shares one instance handle per `db_dir` within the process; when the last `Conn` for a directory is dropped, the handle is released and the server exits on its own once no client (in any process) remains.
 
 ## Requirements
 
